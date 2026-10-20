@@ -171,6 +171,8 @@ def main():
             # a day with no file is a holiday, unless it is recent and the file may not be out yet
             if iso in days_in[ex] or (iso in no_file[ex] and (today - day).days > 3):
                 continue
+            if ex == 'BSE' and iso in no_file['NSE'] and (today - day).days > 3:
+                no_file['BSE'].add(iso); continue  # BSE doesn't say "no file" clearly; NSE's holidays are BSE's too
             if done >= DAY_BUDGET or time.time() - START > TIME_BUDGET:
                 break
             rows = fetch(day); done += 1
