@@ -41,11 +41,20 @@ def nse_rows(urls):
         r = get(u)
         if r:
             rows = list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))
-            rows = [{k.strip(): (v or '').strip() for k, v in x.items() if k} for x in rows]
+            rows = [{k.strip().upper().replace('_', ' '): (v or '').strip() for k, v in x.items() if k} for x in rows]  # the SME file writes NAME_OF_COMPANY
             out = [{'isin': x.get('ISIN NUMBER', ''), 'name': x.get('NAME OF COMPANY', ''), 'nse': x.get('SYMBOL', '')} for x in rows if x.get('SYMBOL')]
             note(f'{u}: {len(out)} rows')
             return out
     return None
+
+
+def tidy(name):
+    # BSE writes names in capitals ("SHREE GANESH REMEDIES LTD."); NSE's are already in title case.
+    if not name.isupper():
+        return name
+    small = {'And', 'Of', 'The', 'For', 'In'}
+    words = [w.capitalize() if len(w) > 3 or w in ('LTD', 'LTD.', 'PVT', 'PVT.') else (w if len(w) <= 3 and w.isalpha() and w not in ('AND', 'OF', 'THE', 'FOR', 'IN') else w.capitalize()) for w in name.split()]
+    return ' '.join(w.lower() if i and w in small else w for i, w in enumerate(words))
 
 
 def bse_api():
@@ -111,7 +120,7 @@ def main():
     for x in (nse or []) + (sme or []):
         put(x['isin'], x['name'], nse_sym=x['nse'])
     for x in bse or []:
-        put(x['isin'], x['name'], bse_code=x['bse'])
+        put(x['isin'], tidy(x['name']), bse_code=x['bse'])
     rows = sorted(([r['name'], r['nse'], r['bse']] for r in by_key.values() if r['name']), key=lambda r: r[0].lower())
     OUT.write_text(json.dumps({'updated': datetime.date.today().isoformat(), 'count': len(rows),
                                'sources': {'nse': bool(nse), 'nse_sme': bool(sme), 'bse': bool(bse)}, 'notes': NOTES[-20:], 'rows': rows},
