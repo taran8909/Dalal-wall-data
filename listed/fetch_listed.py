@@ -4,7 +4,7 @@ Writes listed/companies.json: {"updated", "count", "sources", "rows": [[name, ns
 Dalal & Wall copies it into its search box each week. If one exchange can't be reached,
 that exchange's rows from the previous file are kept.
 """
-import csv, io, json, datetime, pathlib, sys, time
+import csv, io, json, datetime, pathlib, sys, time, zipfile
 import requests
 
 OUT = pathlib.Path(__file__).with_name('companies.json')
@@ -12,17 +12,26 @@ UA = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 NSE = ['https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv', 'https://archives.nseindia.com/content/equities/EQUITY_L.csv']
 NSE_SME = ['https://nsearchives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv', 'https://archives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv']
 BSE = 'https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=Active'
+BSE_HEADERS = {'Referer': 'https://www.bseindia.com/', 'Origin': 'https://www.bseindia.com', 'Accept': 'application/json, text/plain, */*'}
+NOTES = []  # what happened on each source, saved in the output so a failed source can be diagnosed
 
 
-def get(url, **kw):
-    for attempt in range(3):
+def note(msg):
+    print(msg); NOTES.append(msg)
+
+
+SESSION = requests.Session()
+
+
+def get(url, headers=None, tries=3):
+    for attempt in range(tries):
         try:
-            r = requests.get(url, headers={**UA, **kw.pop('headers', {})}, timeout=60, **kw)
+            r = SESSION.get(url, headers={**UA, **(headers or {})}, timeout=60)
             if r.ok and r.content:
                 return r
-            print(f'{url}: HTTP {r.status_code}')
+            note(f'{url}: HTTP {r.status_code}')
         except Exception as e:
-            print(f'{url}: {e}')
+            note(f'{url}: {type(e).__name__}: {str(e)[:160]}')
         time.sleep(3 * (attempt + 1))
     return None
 
@@ -34,22 +43,47 @@ def nse_rows(urls):
             rows = list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))
             rows = [{k.strip(): (v or '').strip() for k, v in x.items() if k} for x in rows]
             out = [{'isin': x.get('ISIN NUMBER', ''), 'name': x.get('NAME OF COMPANY', ''), 'nse': x.get('SYMBOL', '')} for x in rows if x.get('SYMBOL')]
-            print(f'{u}: {len(out)} rows')
+            note(f'{u}: {len(out)} rows')
             return out
     return None
 
 
-def bse_rows():
-    r = get(BSE, headers={'Referer': 'https://www.bseindia.com/', 'Origin': 'https://www.bseindia.com'})
+def bse_api():
+    get('https://www.bseindia.com/', tries=1)  # pick up the site's cookies first
+    r = get(BSE, headers=BSE_HEADERS)
     if not r:
         return None
     try:
         data = r.json()
     except ValueError:
-        print('BSE: not JSON'); return None
+        note(f'BSE list: not JSON ({r.headers.get("content-type")}): {r.text[:120]!r}'); return None
     out = [{'isin': (x.get('ISIN_NUMBER') or '').strip(), 'name': (x.get('Issuer_Name') or x.get('Scrip_Name') or '').strip(), 'bse': str(x.get('SCRIP_CD') or '').strip()} for x in data if x.get('SCRIP_CD')]
-    print(f'BSE: {len(out)} rows')
+    note(f'BSE list: {len(out)} rows')
     return out or None
+
+
+def bse_bhavcopy():
+    # BSE's daily trading file names every company that traded that day.
+    day = datetime.date.today()
+    for _ in range(8):
+        day -= datetime.timedelta(days=1)
+        if day.weekday() >= 5:
+            continue
+        url = f'https://www.bseindia.com/download/BhavCopy/Equity/BhavCopy_BSE_CM_0_0_0_{day:%Y%m%d}_F_0000.CSV'
+        r = get(url, headers={'Referer': 'https://www.bseindia.com/'}, tries=1)
+        if not r or not r.content.lstrip().startswith(b'TradDt'):
+            continue
+        rows = list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))
+        out = [{'isin': (x.get('ISIN') or '').strip(), 'name': (x.get('FinInstrmNm') or '').strip(), 'bse': (x.get('FinInstrmId') or '').strip()}
+               for x in rows if (x.get('FinInstrmId') or '').strip() and (x.get('SctySrs') or '').strip() not in ('F', 'G', 'DR')]
+        note(f'BSE trading file {day}: {len(out)} rows')
+        return out or None
+    note('BSE trading file: none found in the last 8 days')
+    return None
+
+
+def bse_rows():
+    return bse_api() or bse_bhavcopy()
 
 
 def main():
@@ -59,6 +93,8 @@ def main():
     bse = bse_rows()
     if not nse and not bse:
         sys.exit('Neither exchange could be reached; keeping the previous list.')
+    if not bse and not any(c for _, _, c in prev.get('rows', [])):
+        note('BSE: no rows this time or before')
     by_key = {}
     def put(isin, name, nse_sym='', bse_code=''):
         k = isin or ('NSE:' + nse_sym if nse_sym else 'BSE:' + bse_code)
@@ -78,7 +114,7 @@ def main():
         put(x['isin'], x['name'], bse_code=x['bse'])
     rows = sorted(([r['name'], r['nse'], r['bse']] for r in by_key.values() if r['name']), key=lambda r: r[0].lower())
     OUT.write_text(json.dumps({'updated': datetime.date.today().isoformat(), 'count': len(rows),
-                               'sources': {'nse': bool(nse), 'nse_sme': bool(sme), 'bse': bool(bse)}, 'rows': rows},
+                               'sources': {'nse': bool(nse), 'nse_sme': bool(sme), 'bse': bool(bse)}, 'notes': NOTES[-20:], 'rows': rows},
                               ensure_ascii=False, separators=(',', ':')))
     print(f'{len(rows)} companies written')
 
