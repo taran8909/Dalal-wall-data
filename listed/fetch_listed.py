@@ -13,6 +13,7 @@ NSE = ['https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv', 'https:
 NSE_SME = ['https://nsearchives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv', 'https://archives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv']
 BSE = 'https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=Active'
 BSE_HEADERS = {'Referer': 'https://www.bseindia.com/', 'Origin': 'https://www.bseindia.com', 'Accept': 'application/json, text/plain, */*'}
+FUNDS = __import__('re').compile(r'mutual fund|\betf\b|\bbees\b|\binvit\b|\breit\b', __import__('re').I)  # funds, ETFs and trusts, not companies
 NOTES = []  # what happened on each source, saved in the output so a failed source can be diagnosed
 
 
@@ -84,7 +85,8 @@ def bse_bhavcopy():
             continue
         rows = list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))
         out = [{'isin': (x.get('ISIN') or '').strip(), 'name': (x.get('FinInstrmNm') or '').strip(), 'bse': (x.get('FinInstrmId') or '').strip()}
-               for x in rows if (x.get('FinInstrmId') or '').strip() and (x.get('SctySrs') or '').strip() not in ('F', 'G', 'DR')]
+               for x in rows if (x.get('FinInstrmId') or '').strip() and (x.get('SctySrs') or '').strip() not in ('F', 'G', 'DR')
+               and (x.get('FinInstrmTp') or 'STK').strip() in ('STK', '') and not FUNDS.search(x.get('FinInstrmNm') or '')]
         note(f'BSE trading file {day}: {len(out)} rows')
         return out or None
     note('BSE trading file: none found in the last 8 days')
