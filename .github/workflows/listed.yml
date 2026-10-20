@@ -1,0 +1,41 @@
+name: Refresh the list of listed companies
+
+# Builds listed/companies.json from the official NSE and BSE lists.
+on:
+  schedule:
+    - cron: "23 2 * * 1"   # Mondays 07:53 IST
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "listed/fetch_listed.py"
+      - ".github/workflows/listed.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: listed
+  cancel-in-progress: false
+
+jobs:
+  listed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python listed/fetch_listed.py
+      - name: Commit the list
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add listed/companies.json
+          if git diff --cached --quiet; then echo "No changes"; else
+            git commit -m "listed: refresh $(date -u +%Y-%m-%d)"
+            git pull --rebase origin main
+            git push
+          fi
